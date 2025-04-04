@@ -64,6 +64,7 @@ use time::ext::NumericalDuration;
 use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 use xxhash_rust::xxh64::Xxh64Builder;
+use url;
 
 fn process_inclusion_filters(
   inclusion_filters: &[InclusionFilter],
@@ -948,21 +949,39 @@ impl EndpointProvider for HttpServiceDiscoveryEndpointTarget {
         .collect::<Vec<TagValue>>();
 
       for target in &target_block.targets {
-        let address_and_port = target.split(':').collect_vec();
-        if address_and_port.len() != 2 {
-          log::warn!("invalid target format: {target}, expected <address>:<port>");
-          continue;
-        }
+        let target_url = if !target.contains("://") {
+          format!("http://{target}")
+        } else {
+          target.to_string()
+        };
 
-        let Ok(port) = address_and_port[1].parse() else {
-          log::warn!("invalid port in target {target}: {}", address_and_port[1]);
-          continue;
+        let parsed_url = match url::Url::parse(&target_url) {
+          Ok(url) => url,
+          Err(e) => {
+            log::warn!("invalid target URL format: {target}, error: {e}");
+            continue;
+          }
+        };
+
+        let host = match parsed_url.host_str() {
+          Some(h) => h.to_string(),
+          None => {
+            log::warn!("missing host in target URL: {target}");
+            continue;
+          }
+        };
+
+        let port = parsed_url.port().unwrap_or(80);
+        let path = if parsed_url.path() == "/" || parsed_url.path().is_empty() {
+          "/metrics".to_string()
+        } else {
+          parsed_url.path().to_string()
         };
 
         let endpoint = PromEndpoint::new(
-          address_and_port[0].to_string(),
-          port,
-          "/metrics".to_string(),
+          host,
+          port as i32,
+          path,
           Some(Arc::new(Metadata::new(None, None, Some(target.clone())))),
           false,
           "http".to_string(),
